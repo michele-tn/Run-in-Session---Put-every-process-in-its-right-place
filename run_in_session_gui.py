@@ -41,6 +41,8 @@ class SessionApp:
         self.selection = tk.StringVar(value='Select a user session from the table.')
         self.session_choice = tk.StringVar()
         self.session_choices = {}
+        self.source_choice = tk.StringVar(value='Same as destination')
+        self.grant_access = tk.BooleanVar(value=False)
         self.handler = QueueLogHandler(self.events)
         if backend.log.getEffectiveLevel() > logging.INFO:
             backend.log.setLevel(logging.INFO)
@@ -123,29 +125,35 @@ class SessionApp:
         form = self.form_card
         form.columnconfigure(1, weight=1)
         ttk.Label(form, text='02  Configure the process', style='CardTitle.TLabel').grid(row=0, column=0, columnspan=3, sticky='w', pady=(0, 14))
+        ttk.Label(form, text='Run as account (source session)', style='Card.TLabel').grid(row=1, column=0, columnspan=3, sticky='w', pady=(0, 4))
+        self.source_selector = ttk.Combobox(form, textvariable=self.source_choice, state='readonly')
+        self.source_selector.grid(row=2, column=0, columnspan=3, sticky='ew', pady=(0, 8))
+        self.grant_box = ttk.Checkbutton(form, variable=self.grant_access, style='Card.TCheckbutton', text='Allow source logon to access destination desktop')
+        self.grant_box.grid(row=3, column=0, columnspan=3, sticky='w')
+        ttk.Label(form, text='Cross-session access shares this desktop with the source logon. The grant may remain until destination logoff. Run the SYSTEM GUI in the destination session.', style='Muted.TLabel', wraplength=390).grid(row=4, column=0, columnspan=3, sticky='w', pady=(4, 12))
         choices = ttk.Frame(form, style='Card.TFrame')
-        choices.grid(row=1, column=0, columnspan=3, sticky='w', pady=(0, 10))
+        choices.grid(row=5, column=0, columnspan=3, sticky='w', pady=(0, 10))
         ttk.Radiobutton(choices, text='Executable', variable=self.mode, value='exe', style='Card.TRadiobutton', command=self._mode_changed).pack(side='left')
         ttk.Radiobutton(choices, text='Full command', variable=self.mode, value='cmd', style='Card.TRadiobutton', command=self._mode_changed).pack(side='left', padx=12)
-        self._entry(form, 2, 'Executable / command', self.command)
+        self._entry(form, 6, 'Executable / command', self.command)
         self.browse_exe = ttk.Button(form, text='Browse…', command=self._browse_executable)
-        self.browse_exe.grid(row=3, column=2, sticky='e', padx=(8, 0))
-        self.arguments_entry = self._entry(form, 4, 'Arguments', self.arguments)
-        ttk.Label(form, text='Arguments are excluded from the activity log.', style='Muted.TLabel', wraplength=390).grid(row=6, column=0, columnspan=3, sticky='w', pady=(0, 10))
+        self.browse_exe.grid(row=7, column=2, sticky='e', padx=(8, 0))
+        self.arguments_entry = self._entry(form, 8, 'Arguments', self.arguments)
+        ttk.Label(form, text='Arguments are excluded from the activity log.', style='Muted.TLabel', wraplength=390).grid(row=10, column=0, columnspan=3, sticky='w', pady=(0, 10))
         self.advanced_button = ttk.Button(form, text='+  Advanced options', command=self._toggle_advanced)
-        self.advanced_button.grid(row=7, column=0, columnspan=3, sticky='w', pady=8)
+        self.advanced_button.grid(row=11, column=0, columnspan=3, sticky='w', pady=8)
         self.advanced = ttk.Frame(form, style='Card.TFrame')
         self.advanced.columnconfigure(1, weight=1)
         self._entry(self.advanced, 0, 'Working directory', self.cwd)
         ttk.Button(self.advanced, text='Browse…', command=self._browse).grid(row=1, column=2, padx=(8, 0))
         self._entry(self.advanced, 2, 'Desktop', self.desktop)
         options = ttk.Frame(form, style='Card.TFrame')
-        options.grid(row=9, column=0, columnspan=3, sticky='ew', pady=(8, 0))
+        options.grid(row=13, column=0, columnspan=3, sticky='ew', pady=(8, 0))
         ttk.Checkbutton(options, text='Wait for process exit', variable=self.wait, style='Card.TCheckbutton', command=self._wait_changed).grid(row=0, column=0, columnspan=2, sticky='w')
         ttk.Label(options, text='Timeout in seconds', style='Card.TLabel').grid(row=1, column=0, sticky='w', pady=8)
         self.timeout_entry = ttk.Entry(options, textvariable=self.timeout, width=10, state='disabled')
         self.timeout_entry.grid(row=1, column=1, sticky='w', padx=12)
-        ttk.Label(form, textvariable=self.ready_text, style='Hint.TLabel', wraplength=390, padding=(10, 10)).grid(row=10, column=0, columnspan=3, sticky='ew', pady=(12, 0))
+        ttk.Label(form, textvariable=self.ready_text, style='Hint.TLabel', wraplength=390, padding=(10, 10)).grid(row=14, column=0, columnspan=3, sticky='ew', pady=(12, 0))
         results = ttk.Frame(self.page, style='Card.TFrame', padding=18)
         self.results_card = results
         results.columnconfigure(0, weight=1)
@@ -172,8 +180,9 @@ class SessionApp:
         self.run_button = ttk.Button(actions, text='Launch process', style='Primary.TButton', command=lambda: self.execute(False))
         self.run_button.grid(row=1, column=3)
         self._buttons = (self.refresh_button, self.simulate_button, self.run_button)
-        for variable in (self.command, self.desktop, self.timeout, self.wait):
+        for variable in (self.command, self.desktop, self.timeout, self.wait, self.grant_access):
             variable.trace_add('write', lambda *_: self._update_readiness())
+        self.source_choice.trace_add('write', self._source_changed)
         self.filter_text.trace_add('write', lambda *_: self._filter_rows())
         root.bind('<Control-f>', lambda event: self.search_entry.focus_set())
         root.bind('<Control-Return>', lambda event: self.execute(True))
@@ -241,7 +250,7 @@ class SessionApp:
     def _toggle_advanced(self) -> None:
         self.advanced_open = not self.advanced_open
         if self.advanced_open:
-            self.advanced.grid(row=8, column=0, columnspan=3, sticky='ew')
+            self.advanced.grid(row=12, column=0, columnspan=3, sticky='ew')
         else:
             self.advanced.grid_remove()
         self.advanced_button.configure(text='−  Advanced options' if self.advanced_open else '+  Advanced options')
@@ -264,6 +273,8 @@ class SessionApp:
     def _sync_session_choices(self) -> None:
         self.session_choices = {f'ID {row[0]} | {row[1]} | {row[2]} | {row[3]}': str(row[0]) for row in self.rows if row[1] not in ('-', '—', '[unreadable]') and row[2] in ('Active', 'Connected', 'Disconnected') and (int(row[0]) > 0)}
         self.session_selector.configure(values=tuple(self.session_choices))
+        self.source_selector.configure(values=('Same as destination', *self.session_choices))
+        self.grant_access.set(False)
 
     def _choose_session(self, event=None) -> None:
         if self.busy or self.closing:
@@ -292,6 +303,11 @@ class SessionApp:
                 reason = 'The destination must have a readable, logged-on user.'
             elif row[2] not in ('Active', 'Connected', 'Disconnected'):
                 reason = 'This session is not available for launching.'
+        source_id = None
+        if self.source_choice.get() != 'Same as destination':
+            source_id = self.session_choices.get(self.source_choice.get())
+            if source_id is None:
+                reason = 'Source session is no longer available. Select a source account again.'
         if not reason and (not self.command.get().strip()):
             reason = 'Enter an executable or command.'
         if not reason and (not self.desktop.get().strip()):
@@ -308,6 +324,11 @@ class SessionApp:
         state = 'normal' if ready and (not self.busy) and (not self.closing) else 'disabled'
         self.simulate_button.configure(state=state)
         self.run_button.configure(state=state)
+        if ready and source_id is not None and selected and (str(source_id) != selected[0]):
+            source_label = self.source_choice.get()
+            self.ready_text.set(f'Run as {source_label}. Display in session {selected[0]}.' + (' Desktop access consent enabled.' if self.grant_access.get() else ' Enable desktop access consent for actual launch.'))
+            if not self.grant_access.get():
+                self.run_button.configure(state='disabled')
         return ready
 
     def _copy_log(self) -> None:
@@ -340,6 +361,9 @@ class SessionApp:
         if self.busy and hasattr(self, 'operation_selection') and (items != self.operation_selection):
             self.tree.selection_set(self.operation_selection)
             return
+        if not self.busy and getattr(self, '_consent_destination', None) != items:
+            self._consent_destination = items
+            self.grant_access.set(False)
         if items:
             values = self.tree.item(items[0], 'values')
             self.session_choice.set(next((label for label, sid in self.session_choices.items() if sid == str(values[0])), ''))
@@ -351,6 +375,10 @@ class SessionApp:
             self.selection.set('No destination selected.')
         self._update_readiness()
 
+    def _source_changed(self, *args) -> None:
+        self.grant_access.set(False)
+        self._update_readiness()
+
     def _start(self, action, status: str) -> None:
         if self.busy or self.closing:
             return
@@ -359,6 +387,8 @@ class SessionApp:
         self.operation_selection = self.tree.selection()
         self.search_entry.configure(state='disabled')
         self.session_selector.configure(state='disabled')
+        self.source_selector.configure(state='disabled')
+        self.grant_box.configure(state='disabled')
         self.users_filter.configure(state='disabled')
         self.started_at = time.monotonic()
         self.badge.configure(text='IN PROGRESS', style='Badge.TLabel')
@@ -394,6 +424,12 @@ class SessionApp:
             if not selected:
                 raise backend.SessionError('Select a user session in the table.')
             session_id = int(selected[0])
+            source_session_id = None if self.source_choice.get() == 'Same as destination' else int(self.session_choices[self.source_choice.get()])
+            identity_id = session_id if source_session_id is None else source_session_id
+            expected_source_account = next((row[1] for row in self.rows if int(row[0]) == identity_id))
+            grant_desktop_access = self.grant_access.get()
+            if not dry_run and source_session_id is not None and (source_session_id != session_id) and (not grant_desktop_access):
+                raise backend.SessionError('Enable desktop access consent before launching across sessions.')
             command, cwd, desktop = (self.command.get(), self.cwd.get().strip() or None, self.desktop.get())
             wait = self.wait.get()
             try:
@@ -410,7 +446,7 @@ class SessionApp:
         stop_wait, events = (self.stop_wait, self.events)
 
         def run():
-            return backend.run_in_session(session_id, legacy, desktop, cwd, wait, timeout, dry_run, executable=executable, arguments=arguments, stop_wait=stop_wait, notify=lambda pid: events.put(('started', (pid, wait))))
+            return backend.run_in_session(session_id, legacy, desktop, cwd, wait, timeout, dry_run, executable=executable, arguments=arguments, stop_wait=stop_wait, notify=lambda pid: events.put(('started', (pid, wait))), source_session_id=source_session_id, grant_desktop_access=grant_desktop_access, expected_source_account=expected_source_account)
         self._append(f"\n{('SIMULATION' if dry_run else 'LAUNCH')} · Session {session_id}\n")
         self._start(run, 'Simulating…' if dry_run else 'Launching / waiting for the process…')
 
@@ -445,6 +481,8 @@ class SessionApp:
             self.busy = False
             self.search_entry.configure(state='normal')
             self.session_selector.configure(state='readonly')
+            self.source_selector.configure(state='readonly')
+            self.grant_box.configure(state='normal')
             self.users_filter.configure(state='normal')
             self.stop_button.configure(state='disabled')
             self.progress.stop()

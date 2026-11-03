@@ -18,6 +18,7 @@ try:
     import win32profile
     import win32api
     import win32event
+    import win32service
     import pywintypes
 except ImportError as exc:
     sys.exit(f'Cannot load pywin32: {exc}\nInstall the dependency with: "{sys.executable}" -m pip install --upgrade pywin32')
@@ -165,27 +166,104 @@ def get_user_token(session_id):
         raise SessionError(f'WTSQueryUserToken failed: {e.strerror} (code {e.winerror})')
     return token
 
-def run_in_session(session_id, cmd=None, desktop='winsta0\\default', cwd=None, wait=False, timeout=None, dry_run=False, *, executable=None, arguments='', stop_wait=None, notify=None):
+def grant_interactive_desktop(token, destination_id, desktop):
+    if desktop.casefold() != 'winsta0\\default':
+        raise SessionError('Cross-session desktop access supports winsta0\\default only.')
+    with ExitStack() as resources:
+        own = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
+        resources.callback(own.Close)
+        if win32security.GetTokenInformation(own, win32security.TokenSessionId) != destination_id:
+            raise SessionError('Run the SYSTEM GUI inside the destination session before granting desktop access.')
+        station_name = win32service.GetUserObjectInformation(win32service.GetProcessWindowStation(), win32con.UOI_NAME)
+        if station_name.casefold() != 'winsta0':
+            raise SessionError('The SYSTEM launcher must be attached to the destination interactive window station.')
+        groups = win32security.GetTokenInformation(token, win32security.TokenGroups)
+        logon_sids = [sid for sid, flags in groups if flags & 3221225472 == 3221225472]
+        if len(logon_sids) != 1:
+            raise SessionError('Cannot identify a unique logon SID for the source account.')
+        station = win32service.OpenWindowStation('winsta0', False, win32con.READ_CONTROL | win32con.WRITE_DAC)
+        resources.callback(station.CloseWindowStation)
+        desk = win32service.OpenDesktop('default', 0, False, win32con.READ_CONTROL | win32con.WRITE_DAC)
+        resources.callback(desk.CloseDesktop)
+        objects = ((station, 131895), (desk, 131271))
+        planned = []
+        for handle, mask in objects:
+            descriptor = win32security.GetUserObjectSecurity(handle, win32security.DACL_SECURITY_INFORMATION)
+            old_acl = descriptor.GetSecurityDescriptorDacl()
+            if old_acl is None:
+                continue
+            sid = logon_sids[0]
+            existing = 0
+            entries = [old_acl.GetAce(i) for i in range(old_acl.GetAceCount())]
+            for ace in entries:
+                if ace[0][0] == win32security.ACCESS_ALLOWED_ACE_TYPE and ace[-1] == sid:
+                    existing |= ace[1]
+            missing = mask & ~existing
+            if not missing:
+                continue
+            acl = old_acl
+            acl.SetEntriesInAcl([{'AccessPermissions': missing, 'AccessMode': win32security.GRANT_ACCESS, 'Inheritance': 0, 'Trustee': {'TrusteeForm': win32security.TRUSTEE_IS_SID, 'TrusteeType': win32security.TRUSTEE_IS_GROUP, 'Identifier': sid}}])
+            new_descriptor = win32security.SECURITY_DESCRIPTOR()
+            new_descriptor.SetSecurityDescriptorDacl(1, acl, 0)
+            planned.append((handle, descriptor, new_descriptor))
+        applied = []
+        try:
+            for handle, previous, updated in planned:
+                win32security.SetUserObjectSecurity(handle, win32security.DACL_SECURITY_INFORMATION, updated)
+                applied.append((handle, previous))
+        except pywintypes.error as exc:
+            rollback_failed = False
+            for handle, previous in reversed(applied):
+                try:
+                    win32security.SetUserObjectSecurity(handle, win32security.DACL_SECURITY_INFORMATION, previous)
+                except pywintypes.error:
+                    rollback_failed = True
+            raise SessionError('Desktop access grant failed.' + (' Some access changes could not be rolled back; review desktop permissions.' if rollback_failed else ' Applied changes were rolled back.')) from exc
+    log.warning('Desktop access granted to the source logon SID. The grant can outlive this process; destination logoff removes the desktop.')
+
+def run_in_session(session_id, cmd=None, desktop='winsta0\\default', cwd=None, wait=False, timeout=None, dry_run=False, *, executable=None, arguments='', stop_wait=None, notify=None, source_session_id=None, grant_desktop_access=False, expected_source_account=None):
     application, cmd = prepare_command(cmd, executable, arguments)
     validate_options(cmd, cwd, desktop, wait, timeout)
     validate_session(session_id)
-    target_user = query_account(session_id)
+    source_id = session_id if source_session_id is None else source_session_id
+    if source_id != session_id:
+        validate_session(source_id)
+    target_user = query_account(source_id)
+    if expected_source_account is not None and target_user.casefold() != expected_source_account.casefold():
+        raise SessionError('The source session account changed. Refresh sessions and select the execution account again.')
+    destination_user = query_account(session_id)
     if dry_run:
         log.info('[SIMULATION] Input and session %d are valid (user: %s). No process launched.', session_id, target_user)
         log.info('Executable: %s. Arguments hidden.', 'explicit path checked' if application else 'legacy command: availability not checked')
         log.info('Not checked: launch privileges, target user access, profile, desktop and actual startup.')
+        log.info('Execution account: %s (source session %d). Destination desktop: session %d (%s).', target_user, source_id, session_id, destination_user)
+        if source_id != session_id:
+            log.warning('Cross-session launch requires explicit desktop access consent. Simulation does not change permissions.')
         return RunResult('simulated')
     if stop_wait is not None and stop_wait.is_set():
         return RunResult('cancelled')
     ensure_tcb_privilege()
+    if source_id != session_id and (not grant_desktop_access):
+        raise SessionError('Enable desktop access consent for a cross-session launch, or use the same source and destination.')
     with ExitStack() as resources:
-        token = get_user_token(session_id)
+        token = get_user_token(source_id)
         resources.callback(token.Close)
+        if expected_source_account is not None:
+            sid = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+            name, domain, _ = win32security.LookupAccountSid(None, sid)
+            token_account = f'{domain}\\{name}' if domain else name
+            if token_account.casefold() != expected_source_account.casefold():
+                raise SessionError('The acquired token does not belong to the selected source account. No process was created.')
         try:
             primary = win32security.DuplicateTokenEx(token, win32security.SecurityImpersonation, win32con.MAXIMUM_ALLOWED, win32security.TokenPrimary, None)
         except pywintypes.error as e:
             raise SessionError(f'DuplicateTokenEx failed: {e.strerror}')
         resources.callback(primary.Close)
+        if source_id != session_id:
+            try:
+                win32security.SetTokenInformation(primary, win32security.TokenSessionId, session_id)
+            except pywintypes.error as exc:
+                raise SessionError(f'Cannot assign destination session to the source token (code {exc.winerror}).') from exc
         try:
             env = win32profile.CreateEnvironmentBlock(primary, False)
         except pywintypes.error as e:
@@ -194,6 +272,11 @@ def run_in_session(session_id, cmd=None, desktop='winsta0\\default', cwd=None, w
         si.lpDesktop = desktop
         if stop_wait is not None and stop_wait.is_set():
             return RunResult('cancelled')
+        if source_id != session_id:
+            try:
+                grant_interactive_desktop(primary, session_id, desktop)
+            except pywintypes.error as exc:
+                raise SessionError(f'Cannot grant destination desktop access (code {exc.winerror}).') from exc
         try:
             hProc, hThread, pid, tid = win32process.CreateProcessAsUser(primary, application, cmd, None, None, False, win32con.CREATE_UNICODE_ENVIRONMENT, env, cwd, si)
         except pywintypes.error as e:

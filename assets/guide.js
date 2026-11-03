@@ -90,6 +90,8 @@ const mode = $('#build-mode');
 const session = $('#session-id');
 const executable = $('#executable-path');
 const processArguments = $('#process-arguments');
+const sourceSession = $('#source-session-id');
+const grantAccess = $('#grant-access');
 const waiting = $('#wait-process');
 const timeout = $('#timeout-value');
 const output = $('#generated-command code');
@@ -98,9 +100,13 @@ const quotePowerShell = (value) => `'${value.replaceAll("'", "''")}'`;
 function buildCommand() {
   const system = mode.value === 'system';
   $('#program-field').hidden = !system;
-  for (const id of ['executable-field', 'arguments-field', 'wait-field']) $(`#${id}`).hidden = system;
+  for (const id of ['executable-field', 'arguments-field', 'wait-field', 'source-field']) $(`#${id}`).hidden = system;
   $('#timeout-field').hidden = system || !waiting.checked;
+  const crossSession = !system && sourceSession.value !== '' && Number(sourceSession.value) !== Number(session.value);
+  $('#grant-field').hidden = !crossSession;
   let error = '';
+  if (!system && sourceSession.value !== '' && (!/^\d+$/.test(sourceSession.value) || Number(sourceSession.value) < 1 || Number(sourceSession.value) > 4294967294)) error = 'Enter a positive source session ID or leave it empty.';
+  if (crossSession && mode.value === 'launch' && !grantAccess.checked) error = 'Cross-session launch requires explicit desktop access consent.';
   const sessionId = Number(session.value);
   if (!/^\d+$/.test(session.value) || !Number.isSafeInteger(sessionId) || sessionId < 1 || sessionId > 4294967294) error = 'Enter a valid positive Windows session ID.';
   const path = executable.value;
@@ -116,6 +122,8 @@ function buildCommand() {
   parts.push('--session', String(sessionId));
   if (!system) {
     parts.push('--exe', quotePowerShell(path));
+    if (sourceSession.value) parts.push('--source-session', String(Number(sourceSession.value)));
+    if (crossSession && grantAccess.checked) parts.push('--grant-desktop-access');
     if (processArguments.value) parts.push(`--args=${quotePowerShell(processArguments.value)}`);
     if (waiting.checked) parts.push('--wait', '--timeout', String(Number(timeout.value)));
     if (mode.value === 'simulate') parts.push('--dry-run');
@@ -123,9 +131,9 @@ function buildCommand() {
   output.textContent = parts.join(' ');
   builderStatus.textContent = system ? 'Run from administrator PowerShell. Requests a SYSTEM GUI in the selected session.' :
     mode.value === 'simulate' ? 'Simulation only. No target process will be launched.' :
-      'Actual launch. The Python launcher must already be running as SYSTEM; the target uses the selected user’s token.';
+      'Actual launch. The launcher must run as SYSTEM; the target uses the source account token. Cross-session grants require the launcher in the destination session.';
 }
-$('#command-form').addEventListener('input', buildCommand);
+$('#command-form').addEventListener('input', (event) => { if (event.target === sourceSession || event.target === session) grantAccess.checked = false; buildCommand(); });
 $('#command-form').addEventListener('change', buildCommand);
 $('#command-form').addEventListener('submit', (event) => event.preventDefault());
 buildCommand();

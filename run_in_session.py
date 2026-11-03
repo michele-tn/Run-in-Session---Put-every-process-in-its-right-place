@@ -13,6 +13,8 @@ def parse_args(argv=None):
     target = parser.add_mutually_exclusive_group()
     target.add_argument('--session', type=int, help='Session ID')
     target.add_argument('--user', help='User or DOMAIN\\user; a unique match is required')
+    parser.add_argument('--source-session', type=int, help='Session providing the execution account token; defaults to destination')
+    parser.add_argument('--grant-desktop-access', action='store_true', help='Allow the source logon to use the destination desktop; requires SYSTEM inside that session')
     command = parser.add_mutually_exclusive_group()
     command.add_argument('--cmd', help='Legacy full command; quote executable paths containing spaces')
     command.add_argument('--exe', help='Absolute executable path (recommended)')
@@ -26,7 +28,7 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     if args.args and (not args.exe):
         parser.error('--args requires --exe')
-    if (args.gui or args.list) and (args.session is not None or args.user or args.exe or (args.cmd is not None) or args.args or args.wait or (args.timeout is not None) or args.dry_run or args.cwd):
+    if (args.gui or args.list) and (args.session is not None or args.user or args.exe or (args.cmd is not None) or args.args or args.wait or (args.timeout is not None) or args.dry_run or args.cwd or (args.source_session is not None) or args.grant_desktop_access):
         parser.error('--gui and --list do not accept launch options')
     return args
 
@@ -56,7 +58,7 @@ def main(argv=None) -> int:
         if args.session is None and (not args.user):
             raise core.SessionError('Specify --session ID, --user account or --list.')
         session_id = args.session if args.session is not None else core.find_session_by_user(args.user)
-        result = core.run_in_session(session_id, args.cmd, args.desktop, args.cwd, args.wait, args.timeout, args.dry_run, executable=args.exe, arguments=args.args)
+        result = core.run_in_session(session_id, args.cmd, args.desktop, args.cwd, args.wait, args.timeout, args.dry_run, executable=args.exe, arguments=args.args, source_session_id=args.source_session, grant_desktop_access=args.grant_desktop_access)
         return result_exit_code(result)
     except core.SessionError as exc:
         core.log.error('%s', exc)
