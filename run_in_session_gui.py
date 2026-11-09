@@ -160,9 +160,6 @@ class SessionApp:
         self._entry(self.advanced, 0, 'Working directory', self.cwd)
         ttk.Button(self.advanced, text='Browse…', command=self._browse).grid(row=1, column=2, padx=(8, 0))
         self._entry(self.advanced, 2, 'Desktop', self.desktop)
-        self.disable_uac_button = ttk.Button(self.advanced, text='Disable UAC on this machine...', command=self._disable_uac)
-        self.disable_uac_button.grid(row=4, column=0, columnspan=3, sticky='w', pady=(12, 4))
-        ttk.Label(self.advanced, text='Machine-wide change. Administrator or SYSTEM required. A manual restart is required; UAC protection will be reduced.', style='Muted.TLabel', wraplength=390).grid(row=5, column=0, columnspan=3, sticky='w')
         options = ttk.Frame(form, style='Card.TFrame')
         options.grid(row=13, column=0, columnspan=3, sticky='ew', pady=(8, 0))
         ttk.Checkbutton(options, text='Wait for process exit', variable=self.wait, style='Card.TCheckbutton', command=self._wait_changed).grid(row=0, column=0, columnspan=2, sticky='w')
@@ -206,6 +203,8 @@ class SessionApp:
         self.simulate_button.grid(row=1, column=2, padx=(0, 8))
         self.run_button = ttk.Button(actions, text='Launch process', style='Primary.TButton', command=lambda: self.execute(False))
         self.run_button.grid(row=1, column=3)
+        self.disable_uac_button = ttk.Button(actions, text='Disable UAC...', command=self._disable_uac)
+        self.disable_uac_button.grid(row=2, column=1, columnspan=3, sticky='e', pady=(8, 0))
         self._buttons = (self.refresh_button, self.simulate_button, self.run_button, self.disable_uac_button, self.current_session_button)
         for variable in (self.command, self.desktop, self.timeout, self.wait, self.grant_access, self.create_suspended):
             variable.trace_add('write', lambda *_: self._update_readiness())
